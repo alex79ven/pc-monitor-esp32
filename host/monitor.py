@@ -401,47 +401,101 @@ class BleSender(threading.Thread):
         self._err = None
         self._dbg = False
         self._stop = False
+        self._reconnect_requested = False
+        self._last_address = None
 
     def run(self):
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
-        self._loop.run_until_complete(self._main())
+        try:
+            self._loop.run_until_complete(self._main())
+        finally:
+            self._loop.close()
 
     async def _find(self):
-        devices = await BleakScanner.discover(timeout=3)
-        return next((d for d in devices if self.name in (d.name or "")), None)
+        # После сна CoreBluetooth иногда оставляет клиент в состоянии
+        # connected, но уже не может обмениваться данными. Сначала пробуем
+        # последний адрес напрямую, а если он не подошёл — ищем устройство.
+        if self._last_address:
+            return self._last_address, self.name, True
+
+        devices = await asyncio.wait_for(
+            BleakScanner.discover(timeout=3), timeout=5)
+        device = next((d for d in devices if self.name in (d.name or "")), None)
+        if device is None:
+            return None, self.name, False
+        self._last_address = device.address
+        return device.address, device.name or self.name, False
+
+    async def _disconnect(self, client):
+        if client is None:
+            return
+        try:
+            await asyncio.wait_for(client.disconnect(), timeout=2)
+        except Exception:  # noqa: BLE001
+            # После системного сна disconnect иногда зависает в CoreBluetooth.
+            # Нельзя оставлять BLE-поток в ожидании этого callback.
+            pass
 
     async def _main(self):
         while not self._stop:
             client = None
+            used_cached_address = False
+            connected_once = False
             try:
-                dev = await self._find()
-                if dev is None:
+                address, display_name, used_cached_address = await self._find()
+                if address is None:
                     raise ConnectionError("устройство не найдено в радиусе")
-                print(f"BLE: подключаюсь к {dev.name}", flush=True)
-                client = BleakClient(dev.address)
-                await client.connect(timeout=10)
+
+                self._reconnect_requested = False
+                suffix = " (повторно)" if used_cached_address else ""
+                print(f"BLE: подключаюсь к {display_name}{suffix}", flush=True)
+                client = BleakClient(address)
+                await asyncio.wait_for(client.connect(timeout=10), timeout=12)
+                if not client.is_connected:
+                    raise ConnectionError("BLE-соединение не установлено")
                 self._rx = client
                 self.connected = True
+                connected_once = True
                 self._ready.set()
                 self._dbg = False
-                while not self._stop and client.is_connected and self._rx is client:
+                print("BLE: подключено, шлю данные", flush=True)
+
+                last_wall = time.time()
+                last_mono = time.monotonic()
+                while (not self._stop and client.is_connected and
+                       self._rx is client and not self._reconnect_requested):
                     await asyncio.sleep(0.5)
+                    wall_now = time.time()
+                    mono_now = time.monotonic()
+                    if (wall_now - last_wall > 5 or mono_now - last_mono > 5):
+                        print("BLE: обнаружена пауза/сон, сбрасываю соединение", flush=True)
+                        self._reconnect_requested = True
+                        break
+                    last_wall = wall_now
+                    last_mono = mono_now
             except asyncio.CancelledError:
                 break
             except Exception as e:  # noqa: BLE001
                 self._err = e
+                if not connected_once:
+                    self._last_address = None
                 print(f"BLE: сбой: {e!r}", flush=True)
             finally:
-                if client is not None:
-                    try:
-                        await client.disconnect()
-                    except Exception:  # noqa: BLE001
-                        pass
-                self._rx = None
+                await self._disconnect(client)
+                if self._rx is client:
+                    self._rx = None
                 self.connected = False
                 if not self._stop:
                     await asyncio.sleep(2)
+
+    def request_reconnect(self):
+        """Сбросить BLE-клиент после системного sleep/wake или зависшей записи."""
+        if self._stop:
+            return
+        self._reconnect_requested = True
+        self.connected = False
+        self._rx = None
 
     def stop(self):
         self._stop = True
@@ -452,24 +506,23 @@ class BleSender(threading.Thread):
                 pass
 
     async def _force_disconnect(self):
-        if self._rx is not None:
-            try:
-                await self._rx.disconnect()
-            except Exception:  # noqa: BLE001
-                pass
+        client = self._rx
+        if client is not None:
+            await self._disconnect(client)
 
     def send(self, data):
-        if not self.connected or self._loop is None:
+        client = self._rx
+        if not self.connected or self._loop is None or client is None:
             return False
         fut = asyncio.run_coroutine_threadsafe(
-            self._rx.write_gatt_char(BLE_CHAR_RX, (data + "\n").encode()), self._loop)
+            client.write_gatt_char(BLE_CHAR_RX, (data + "\n").encode()), self._loop)
         try:
             fut.result(timeout=2)
             return True
         except Exception as e:  # noqa: BLE001
             print(f"BLE: write failed: {e!r}", flush=True)
-            self.connected = False
-            self._rx = None
+            if self._rx is client:
+                self.request_reconnect()
             return False
 
 
@@ -520,7 +573,21 @@ def main():
     try:
         ser = None
         idle = None
+        last_wall = time.time()
+        last_mono = time.monotonic()
         while True:
+            # Во время sleep основной поток тоже приостанавливается. После
+            # пробуждения большая разница во времени позволяет явно сбросить
+            # CoreBluetooth-клиент, который часто остаётся в состоянии connected.
+            wall_now = time.time()
+            mono_now = time.monotonic()
+            if ble is not None and max(wall_now - last_wall,
+                                       mono_now - last_mono) > 5:
+                print("Система была приостановлена, переподключаю BLE", flush=True)
+                ble.request_reconnect()
+            last_wall = wall_now
+            last_mono = mono_now
+
             if not args.no_serial and ser is None:
                 port = args.port or find_port()
                 if port:
