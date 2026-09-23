@@ -28,7 +28,7 @@
 #define DATA_TIMEOUT_MS 10000
 // Если хост уснул, ESP32 может не получить callback отключения. Считаем
 // соединение зависшим, если от host давно не было ни одной команды.
-#define BLE_STALE_MS 5000
+#define BLE_STALE_MS 15000
 #define BLE_ADV_RETRY_MS 5000
 
 static QueueHandle_t bleQueue;
