@@ -453,6 +453,21 @@ void processLine(const char* line)
 
     int v;
 
+    if (strncmp(line, "NOWPLAY", 7) == 0) {
+        const char* p = line + 7;
+        while (*p == ' ')
+            p++;
+        char icon[4] = "0";
+        int ic = 0;
+        while (*p && *p != ' ' && ic < (int)sizeof(icon) - 1)
+            icon[ic++] = *p++;
+        icon[ic] = 0;
+        while (*p == ' ')
+            p++;
+        setMedia(icon, p);
+        return;
+    }
+
     if ((v = findVal("BRIGHT", line)) >= 0) {
         setOsd(OSD_BRIGHT, v);
         return;
@@ -491,21 +506,6 @@ void processLine(const char* line)
     if (mute >= 0) {
         gMuted = mute;
         setOsd(OSD_VOL, gOsdVal);
-        return;
-    }
-
-    if (strncmp(line, "NOWPLAY", 7) == 0) {
-        const char* p = line + 7;
-        while (*p == ' ')
-            p++;
-        char icon[4] = "0";
-        int ic = 0;
-        while (*p && *p != ' ' && ic < (int)sizeof(icon) - 1)
-            icon[ic++] = *p++;
-        icon[ic] = 0;
-        while (*p == ' ')
-            p++;
-        setMedia(icon, p);
         return;
     }
 
