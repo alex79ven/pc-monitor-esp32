@@ -20,6 +20,8 @@ pyinstaller --clean --noconfirm --windowed --name "$APP_NAME" \
 PLIST="dist/$APP_NAME.app/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Delete :LSUIElement" "$PLIST" 2>/dev/null || true
 /usr/libexec/PlistBuddy -c "Add :LSUIElement bool true" "$PLIST"
+/usr/libexec/PlistBuddy -c "Add :NSBluetoothAlwaysUsageDescription string 'OLED-Monitor uses Bluetooth to send PC metrics to the display.'" "$PLIST"
+/usr/libexec/PlistBuddy -c "Add :NSBluetoothPeripheralUsageDescription string 'OLED-Monitor uses Bluetooth to send PC metrics to the display.'" "$PLIST"
 codesign --force --deep --sign - "dist/$APP_NAME.app"
 
 STAGE="dist/$APP_NAME.dmg-staging"
