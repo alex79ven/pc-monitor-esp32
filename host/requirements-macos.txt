@@ -1,0 +1,6 @@
+psutil
+pyserial
+bleak
+pyobjc-framework-Cocoa
+pyobjc-framework-Quartz
+pyinstaller

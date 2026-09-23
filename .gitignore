@@ -1,0 +1,7 @@
+.pio/
+.venv/
+__pycache__/
+dist/
+build/
+*.pyc
+.RPMS_OF_THE_FUTURE
