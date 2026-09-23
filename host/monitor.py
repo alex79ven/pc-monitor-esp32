@@ -35,13 +35,17 @@ elif IS_WINDOWS:
 else:
     bridge = None
 
+if IS_DARWIN:
+    import mac_smc
+else:
+    mac_smc = None
+
 from bleak import BleakClient, BleakScanner  # noqa: E402
 
 INTERVAL = 1.0
 BLE_NAME = "OLED-MONITOR"
 BLE_SERVICE = "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
 BLE_CHAR_RX = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"
-BLE_CHAR_TX = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"
 
 OSD_TAGS = {"bright": "BRIGHT", "kbd": "KBD", "vol": "VOL", "media": "MEDIA"}
 
@@ -66,9 +70,20 @@ def sample_line():
 
 
 def pick_temp():
+    if IS_DARWIN and mac_smc is not None:
+        try:
+            value = mac_smc.cpu_temperature()
+            if value is not None:
+                return int(round(value))
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        sensors = psutil.sensors_temperatures()
+    except (AttributeError, NotImplementedError):
+        return 0
     for name in ("coretemp", "k10temp", "cpu_thermal", "acpitz"):
-        if name in psutil.sensors_temperatures():
-            zones = psutil.sensors_temperatures()[name]
+        if name in sensors:
+            zones = sensors[name]
             if zones:
                 return max(z.current or 0 for z in zones)
     return 0
@@ -99,6 +114,9 @@ def idle_reason():
     """Linux: 'saver' заставка, 'lock' блокировка, 'off' экран погас, None активность.
     macOS/Windows: 'off' если бездействие, иначе None."""
     if bridge is not None:
+        state = getattr(bridge, "screen_state", None)
+        if state is not None:
+            return state()
         return "off" if bridge.screen_idle() else None
 
     saver = False
@@ -201,7 +219,8 @@ def now_playing():
     На кратковременные пропажи MPRIS (буферизация, смена видео) — hysteresis ~5с;
     явная пауза/остановка возвращает None сразу."""
     if bridge is not None:
-        return None
+        getter = getattr(bridge, "now_playing", None)
+        return getter() if getter is not None else None
     try:
         out = subprocess.run(
             ["playerctl", "-a", "metadata", "--format",
@@ -402,7 +421,6 @@ class BleSender(threading.Thread):
                 print(f"BLE: подключаюсь к {dev.name}", flush=True)
                 client = BleakClient(dev.address)
                 await client.connect(timeout=10)
-                await client.start_notify(BLE_CHAR_TX, lambda *a, **k: None)
                 self._rx = client
                 self.connected = True
                 self._ready.set()
