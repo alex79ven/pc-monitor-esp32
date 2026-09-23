@@ -26,6 +26,10 @@
 
 #define OSD_DURATION 5000
 #define DATA_TIMEOUT_MS 10000
+// Если хост уснул, ESP32 может не получить callback отключения. Считаем
+// соединение зависшим, если от host давно не было ни одной команды.
+#define BLE_STALE_MS 5000
+#define BLE_ADV_RETRY_MS 5000
 
 static QueueHandle_t bleQueue;
 
@@ -50,6 +54,7 @@ static bool gClockSet = false;
 static int gClockSec = 0;
 static uint32_t gClockSetMs = 0;
 static volatile uint32_t gLastData = 0;
+static volatile uint32_t gBleLastData = 0;
 
 static volatile OsdType gOsdType = OSD_NONE;
 static volatile int gOsdVal = 0;
@@ -573,6 +578,7 @@ class BLEHandler : public BLECharacteristicCallbacks
             n = sizeof(item) - 1;
         memcpy(item, v.data(), n);
         item[n] = 0;
+        gBleLastData = millis();
         if (xQueueSend(bleQueue, item, 0) != pdTRUE) {
             xQueueReset(bleQueue);
             xQueueSend(bleQueue, item, 0);
@@ -587,6 +593,7 @@ class BLEServerCb : public BLEServerCallbacks
     void onConnect(BLEServer* srv) override
     {
         gBleConnected = true;
+        gBleLastData = millis();
     }
     void onDisconnect(BLEServer* srv) override
     {
@@ -658,6 +665,18 @@ void loop()
     }
 
     uint32_t now = millis();
+    if (gBleConnected && gBleLastData != 0 &&
+        (now - gBleLastData) >= BLE_STALE_MS) {
+        // macOS может потерять BLE-сессию во время сна без disconnect
+        // callback на стороне ESP32. Сбрасываем ложное состояние connected
+        // и возвращаем периодическое рекламное объявление.
+        gBleConnected = false;
+        if (gServer != nullptr && gServer->getConnectedCount() > 0) {
+            gServer->disconnect(gServer->getConnId());
+        }
+        BLEDevice::startAdvertising();
+        Serial.println("BLE: stale connection, re-advertising");
+    }
     if (gOsdType != OSD_NONE && (now - gOsdUntil) >= OSD_DURATION) {
         gOsdType = OSD_NONE;
         if (gMode == MODE_CLOCK)
@@ -692,7 +711,7 @@ void loop()
     static uint32_t lastAdv = 0;
     if (lastAdv == 0)
         lastAdv = now;
-    if (!gBleConnected && now - lastAdv >= 15000) {
+    if (!gBleConnected && now - lastAdv >= BLE_ADV_RETRY_MS) {
         lastAdv = now;
         BLEDevice::startAdvertising();
         Serial.println("BLE: keepalive adv");
