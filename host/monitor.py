@@ -191,6 +191,59 @@ def media_status():
     return None
 
 
+_NP_CACHE = {"item": None, "ts": 0.0}
+_NP_HYST = 5.0
+
+
+def now_playing():
+    """Linux: (icon, text) если какой-то плеер играет, иначе None.
+    icon: '1' youtube/браузер, '0' музыкальный плеер.
+    На кратковременные пропажи MPRIS (буферизация, смена видео) — hysteresis ~5с;
+    явная пауза/остановка возвращает None сразу."""
+    if bridge is not None:
+        return None
+    try:
+        out = subprocess.run(
+            ["playerctl", "-a", "metadata", "--format",
+             "{{playerName}}|{{status}}|{{artist}}|{{title}}"],
+            capture_output=True, text=True, timeout=2).stdout
+    except (FileNotFoundError, subprocess.SubprocessError):
+        out = None
+
+    if out is not None:
+        for ln in out.splitlines():
+            parts = ln.split("|")
+            if len(parts) < 4:
+                continue
+            name, status = parts[0], parts[1]
+            artist = parts[2]
+            title = "|".join(parts[3:])
+            if status in ("Paused", "Stopped"):
+                _NP_CACHE["item"] = None
+                _NP_CACHE["ts"] = time.time()
+                return None
+            if status != "Playing":
+                continue
+            text = f"{artist} - {title}" if artist.strip() and title.strip() else (artist or title)
+            text = text.strip()
+            if not text:
+                continue
+            low = name.lower()
+            icon = "1" if any(k in low for k in
+                              ("youtube", "chrom", "firefox", "brave", "vivaldi")) else "0"
+            b = text.encode("utf-8")[:140]
+            item = (icon, b.decode("utf-8", "ignore"))
+            _NP_CACHE["item"] = item
+            _NP_CACHE["ts"] = time.time()
+            return item
+
+    # плееров нет/ошибка опроса — короткий hysteresis, чтобы не мигать метриками
+    if _NP_CACHE["item"] is not None and time.time() - _NP_CACHE["ts"] < _NP_HYST:
+        return _NP_CACHE["item"]
+    _NP_CACHE["item"] = None
+    return None
+
+
 def watch_media_keys_linux(events: "queue.Queue"):
     """Linux: ловит нажатия медиа-клавиш и публикует (media, status)."""
     fds = []
@@ -491,7 +544,11 @@ def main():
             elif idle == "off":
                 ser = send_line(ser, ble, time.strftime("TIME %H:%M:%S"))
             elif not drawn:
-                ser = send_line(ser, ble, sample_line())
+                np = now_playing()
+                if np is not None:
+                    ser = send_line(ser, ble, f"NOWPLAY {np[0]} {np[1]}")
+                else:
+                    ser = send_line(ser, ble, sample_line())
 
             time.sleep(args.rate)
     except KeyboardInterrupt:

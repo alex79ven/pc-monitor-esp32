@@ -22,7 +22,7 @@
 #define BLE_CHAR_TX "6e400003-b5a3-f393-e0a9-e50e24dcca9e"
 
 #define BLEQ_ITEMS 8
-#define BLEQ_ITEM_SIZE 80
+#define BLEQ_ITEM_SIZE 160
 
 #define OSD_DURATION 5000
 #define DATA_TIMEOUT_MS 10000
@@ -40,7 +40,8 @@ enum OsdType {
 enum ModeType {
     MODE_METRICS = 0,
     MODE_CLOCK,
-    MODE_STARS
+    MODE_STARS,
+    MODE_MEDIA
 };
 
 static volatile ModeType gMode = MODE_METRICS;
@@ -79,6 +80,13 @@ static float burstY[STARS_BURST];
 static float burstZ[STARS_BURST];
 static uint8_t burstLife[STARS_BURST];
 static uint8_t burstIdx = 0;
+
+#define MEDIA_TEXT_MAX 120
+#define MEDIA_SCROLL_SPEED_MS 110
+static char gMediaText[MEDIA_TEXT_MAX] = "";
+static int gMediaIcon = 0;      // 0 spotify, 1 youtube
+static int gMediaScroll = 0;
+static uint32_t gMediaLastMs = 0;
 
 U8G2_SSD1306_72X40_ER_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE, OLED_SCL, OLED_SDA);
 
@@ -156,6 +164,9 @@ void drawMetrics()
     if (gTemp > 0) {
         snprintf(buf, sizeof(buf), "TMP %d", gTemp);
         u8g2.drawStr(2, 39, buf);
+        int tw = u8g2.getStrWidth(buf);
+        u8g2.drawCircle(2 + tw + 2, 34, 1);
+        u8g2.drawStr(2 + tw + 5, 39, "C");
     }
     u8g2.sendBuffer();
 }
@@ -359,6 +370,72 @@ void setOsd(OsdType type, int val)
     drawOsd(type, val);
 }
 
+void drawSpotifyIcon(int x, int y)
+{
+    u8g2.drawCircle(x + 8, y + 8, 8);
+    u8g2.drawDisc(x + 8, y + 8, 3);
+}
+
+void drawYoutubeIcon(int x, int y)
+{
+    u8g2.drawRFrame(x, y, 19, 13, 2);
+    u8g2.drawTriangle(x + 5, y + 3, x + 5, y + 10, x + 13, y + 7);
+}
+
+void drawMediaScreen()
+{
+    u8g2.clearBuffer();
+    if (gMediaIcon == 1)
+        drawYoutubeIcon(27, 3);
+    else
+        drawSpotifyIcon(28, 3);
+
+    u8g2.setFont(u8g2_font_5x8_t_cyrillic);
+    int textW = u8g2.getUTF8Width(gMediaText);
+    if (textW <= 72) {
+        u8g2.drawUTF8((72 - textW) / 2, 36, gMediaText);
+    } else {
+        int full = textW + 72;
+        int sx = 72 - (gMediaScroll % full);
+        u8g2.drawUTF8(sx, 36, gMediaText);
+    }
+    u8g2.sendBuffer();
+}
+
+void setMedia(const char* icon, const char* text)
+{
+    int ic = atoi(icon);
+    ic = (ic == 1) ? 1 : 0;
+    bool wasMedia = (gMode == MODE_MEDIA);
+    bool same = wasMedia && ic == gMediaIcon &&
+                strcmp(gMediaText, text) == 0;
+    if (same)
+        return;
+    bool entering = !wasMedia;
+    gMediaIcon = ic;
+    snprintf(gMediaText, sizeof(gMediaText), "%s", text);
+    if (entering)
+        gMediaScroll = 0;
+    gMediaLastMs = millis();
+    gMode = MODE_MEDIA;
+    applyContrast();
+    drawMediaScreen();
+}
+
+void tickMedia()
+{
+    if (gMode != MODE_MEDIA)
+        return;
+    if (gOsdType != OSD_NONE)
+        return;
+    uint32_t now = millis();
+    if (now - gMediaLastMs >= MEDIA_SCROLL_SPEED_MS) {
+        gMediaLastMs = now;
+        gMediaScroll++;
+        drawMediaScreen();
+    }
+}
+
 int findVal(const char* tag, const char* data)
 {
     const char* p = strstr(data, tag);
@@ -414,6 +491,21 @@ void processLine(const char* line)
     if (mute >= 0) {
         gMuted = mute;
         setOsd(OSD_VOL, gOsdVal);
+        return;
+    }
+
+    if (strncmp(line, "NOWPLAY", 7) == 0) {
+        const char* p = line + 7;
+        while (*p == ' ')
+            p++;
+        char icon[4] = "0";
+        int ic = 0;
+        while (*p && *p != ' ' && ic < (int)sizeof(icon) - 1)
+            icon[ic++] = *p++;
+        icon[ic] = 0;
+        while (*p == ' ')
+            p++;
+        setMedia(icon, p);
         return;
     }
 
@@ -545,7 +637,7 @@ void setup()
 
 void loop()
 {
-    static char line[80];
+    static char line[160];
     static int n = 0;
 
     while (Serial.available()) {
@@ -572,6 +664,8 @@ void loop()
             drawClock();
         else if (gMode == MODE_STARS)
             drawStars();
+        else if (gMode == MODE_MEDIA)
+            drawMediaScreen();
         else
             drawMetrics();
     }
@@ -583,6 +677,7 @@ void loop()
     }
 
     tickStars();
+    tickMedia();
 
     static int8_t drawnMin = -1;
     if (gMode == MODE_CLOCK && gClockSet) {
