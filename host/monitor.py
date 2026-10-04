@@ -61,12 +61,27 @@ if IS_LINUX:
     _INPUT_EVENT = struct.Struct("@llHHI")
 
 
+WEEKDAYS = ("MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN")
+MONTHS = ("JAN", "FEB", "MAR", "APR", "MAY", "JUN",
+          "JUL", "AUG", "SEP", "OCT", "NOV", "DEC")
+
+
+def clock_tag():
+    # Время и дата для OLED. Используется отдельная команда CLK, чтобы не
+    # переключать экран в режим часов, как это делает команда TIME.
+    # Формат даты: "ДЕНЬ_НЕДЕЛИ, Д МЕСЯЦ" -> "MON, 5 OCT"
+    now = time.localtime()
+    date = "%s, %d %s" % (WEEKDAYS[now.tm_wday], now.tm_mday,
+                          MONTHS[now.tm_mon - 1])
+    return "CLK " + time.strftime("%H:%M:%S") + " " + date
+
+
 def sample_line():
     cpu = int(psutil.cpu_percent())
     ram = int(psutil.virtual_memory().percent)
     disk = int(psutil.disk_usage("/").percent)
     temp = int(pick_temp())
-    return f"CPU {cpu} RAM {ram} DISK {disk} TEMP {temp}"
+    return f"{clock_tag()} CPU {cpu} RAM {ram} DISK {disk} TEMP {temp}"
 
 
 def pick_temp():
@@ -368,11 +383,15 @@ def watch_system_bridge(events: "queue.Queue"):
         if v is not None and (prev.get("vol") != v[0] or prev.get("mute") != v[1]):
             prev["vol"], prev["mute"] = v[0], v[1]
             events.put(("vol", v[0], v[1]))
-        it = bridge.screen_idle()
+        # Именно screen_state(), а не screen_idle(): нужно различать
+        # 'saver'/'lock' (звёзды) и 'off' (крупные часы), иначе при
+        # заставке отправляется TIME вместо STARS.
+        state = getattr(bridge, "screen_state", None)
+        it = state() if state is not None else ("off" if bridge.screen_idle() else None)
         if prev_idle != it:
             prev_idle = it
-            events.put(("idle", "off" if it else None, None))
-            print(f"IDLE STATE: {'off' if it else 'None'}", flush=True)
+            events.put(("idle", it, None))
+            print(f"IDLE STATE: {it}", flush=True)
         time.sleep(0.3)
 
 
@@ -623,11 +642,16 @@ def main():
                 ser = send_line(ser, ble, line)
                 drawn = True
 
-            if idle == "lock" or idle == "saver":
+            # При блокировке показываем крупные часы, при обычной заставке —
+            # звёзды. Это противоположно прежней логике, где оба состояния
+            # слали STARS.
+            if idle == "lock":
+                ser = send_line(ser, ble, "TIME " + clock_tag()[4:])
+            elif idle == "saver":
                 if not drawn:
                     ser = send_line(ser, ble, "STARS")
             elif idle == "off":
-                ser = send_line(ser, ble, time.strftime("TIME %H:%M:%S"))
+                ser = send_line(ser, ble, "TIME " + clock_tag()[4:])
             elif not drawn:
                 np = now_playing()
                 if np is not None:

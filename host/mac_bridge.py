@@ -277,16 +277,20 @@ def screensaver_active():
 
 
 def screen_state():
+    # Блокировка проверяется ПЕРВОЙ: при блокировке macOS запускает
+    # ScreenSaverEngine, и проверка заставки ниже перехватила бы состояние,
+    # возвращая "saver" вместо "lock".
+    if HAS_QUARTZ:
+        try:
+            d = Quartz.CGSessionCopyCurrentDictionary()
+            if d and d.get("CGSSessionScreenIsLocked") == "1":
+                return "lock"
+        except Exception:  # noqa: BLE001
+            pass
     if screensaver_active():
         return "saver"
     if not HAS_QUARTZ:
         return None
-    try:
-        d = Quartz.CGSessionCopyCurrentDictionary()
-        if d and d.get("CGSSessionScreenIsLocked") == "1":
-            return "lock"
-    except Exception:  # noqa: BLE001
-        pass
     try:
         if Quartz.CGDisplayIsAsleep():
             return "off"
