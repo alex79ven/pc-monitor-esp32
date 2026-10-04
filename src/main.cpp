@@ -1,4 +1,3 @@
-
 #include <Arduino.h>
 #include <HWCDC.h>
 #include <U8g2lib.h>
@@ -8,15 +7,22 @@
 #include <math.h>
 
 #ifndef OLED_SDA
-#define OLED_SDA 8
+#define OLED_SDA 20
 #endif
 #ifndef OLED_SCL
-#define OLED_SCL 9
+#define OLED_SCL 21
 #endif
 
 #ifndef BLE_NAME
 #define BLE_NAME "OLED-MONITOR"
 #endif
+
+// 0.96" SSD1306 128x64 two-color OLED:
+// upper 16 pixels are yellow, lower 48 pixels are blue.
+#define OLED_WIDTH 128
+#define OLED_HEIGHT 64
+#define OLED_STATUS_H 16
+#define OLED_MAIN_Y 18
 
 #define BLE_SERVICE "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
 #define BLE_CHAR_RX "6e400002-b5a3-f393-e0a9-e50e24dcca9e"
@@ -94,11 +100,10 @@ static int gMediaIcon = 0;      // 0 spotify, 1 youtube
 static int gMediaScroll = 0;
 static uint32_t gMediaLastMs = 0;
 
-U8G2_SSD1306_72X40_ER_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE, OLED_SCL, OLED_SDA);
+U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE, OLED_SCL, OLED_SDA);
 
-void drawBar(int baseline, int v)
+void drawBar(int x, int baseline, int w, int barH, int v)
 {
-    int x = 42, w = 28, barH = 7;
     u8g2.drawFrame(x, baseline - barH + 1, w, barH);
     int fw = (int)((long)(w - 2) * v / 100);
     if (fw > 0)
@@ -112,7 +117,7 @@ void drawRow(int baseline, const char* label, int value)
     char buf[8];
     snprintf(buf, sizeof(buf), "%d%%", value);
     u8g2.drawStr(24, baseline, buf);
-    drawBar(baseline, value);
+    drawBar(54, baseline, 72, 10, value);
 }
 
 void applyContrast()
@@ -138,42 +143,116 @@ void updateClockTime()
     snprintf(gTime, sizeof(gTime), "%02d:%02d", t / 3600, (t % 3600) / 60);
 }
 
+void drawStatusBar(const char* left, const char* center, const char* right)
+{
+    u8g2.setFont(u8g2_font_5x8_tf);
+    if (left && left[0]) {
+        u8g2.drawStr(2, 11, left);
+    }
+    if (center && center[0]) {
+        int w = u8g2.getStrWidth(center);
+        u8g2.drawStr((OLED_WIDTH - w) / 2, 11, center);
+    }
+    if (right && right[0]) {
+        int w = u8g2.getStrWidth(right);
+        u8g2.drawStr(OLED_WIDTH - w - 2, 11, right);
+    }
+    u8g2.drawHLine(0, OLED_STATUS_H - 1, OLED_WIDTH - 1);
+}
+
+void drawMetricsStatusBar()
+{
+    char temp[12];
+    if (gTemp > 0)
+        snprintf(temp, sizeof(temp), "%dC", gTemp);
+    else
+        snprintf(temp, sizeof(temp), "--C");
+
+    if (gClockSet)
+        updateClockTime();
+    else
+        snprintf(gTime, sizeof(gTime), "--:--");
+
+    u8g2.setFont(u8g2_font_logisoso16_tn);
+    u8g2.drawStr(2, 15, temp);
+    int tw = u8g2.getStrWidth(gTime);
+    u8g2.drawStr(OLED_WIDTH - tw - 2, 15, gTime);
+}
+
+void drawProgressStatusBar(const char* label, int val)
+{
+    if (val < 0)
+        val = 0;
+    if (val > 100)
+        val = 100;
+
+    char buf[8];
+    snprintf(buf, sizeof(buf), "%d%%", val);
+    u8g2.setFont(u8g2_font_5x8_tf);
+    u8g2.drawStr(2, 7, label);
+    int tw = u8g2.getStrWidth(buf);
+    u8g2.drawStr(OLED_WIDTH - tw - 2, 7, buf);
+
+    u8g2.drawFrame(2, 8, OLED_WIDTH - 4, 7);
+    int fw = (int)((long)(OLED_WIDTH - 8) * val / 100);
+    if (fw > 0)
+        u8g2.drawBox(3, 9, fw, 5);
+}
+
 void drawClock()
 {
     updateClockTime();
     u8g2.clearBuffer();
+
+    char temp[8];
+    if (gTemp > 0)
+        snprintf(temp, sizeof(temp), "%dC", gTemp);
+    else
+        snprintf(temp, sizeof(temp), "--C");
+    drawStatusBar("CLOCK", "", temp);
+
     u8g2.setFont(u8g2_font_logisoso24_tn);
     int w = u8g2.getStrWidth(gTime);
-    u8g2.drawStr((72 - w) / 2, 32, gTime);
+    u8g2.drawHLine(18, OLED_MAIN_Y + 2, 109);
+    u8g2.drawStr((OLED_WIDTH - w) / 2, 52, gTime);
+    u8g2.drawHLine(18, 58, 109);
     u8g2.sendBuffer();
 }
 
 void drawMetrics()
 {
     u8g2.clearBuffer();
+
+    char temp[8];
+    if (gTemp > 0)
+        snprintf(temp, sizeof(temp), "%dC", gTemp);
+    else
+        snprintf(temp, sizeof(temp), "--C");
+
     if (gCpu < 0 && gRam < 0 && gDisk < 0) {
+        drawStatusBar("PC", "OFFLINE", temp);
         u8g2.setFont(u8g2_font_6x10_tf);
-        u8g2.drawStr(6, 20, "PC MONITOR");
-        u8g2.drawStr(6, 32, "waiting...");
+        const char* title = "PC MONITOR";
+        const char* waiting = "WAITING FOR HOST";
+        int tw = u8g2.getStrWidth(title);
+        int ww = u8g2.getStrWidth(waiting);
+        u8g2.drawStr((OLED_WIDTH - tw) / 2, 34, title);
+        u8g2.drawStr((OLED_WIDTH - ww) / 2, 50, waiting);
         u8g2.sendBuffer();
         return;
     }
-    if (gCpu >= 0)
-        drawRow(9, "CPU", gCpu);
-    if (gRam >= 0)
-        drawRow(19, "RAM", gRam);
-    if (gDisk >= 0)
-        drawRow(29, "DSK", gDisk);
 
-    u8g2.setFont(u8g2_font_6x10_tf);
-    char buf[24];
-    if (gTemp > 0) {
-        snprintf(buf, sizeof(buf), "TMP %d", gTemp);
-        u8g2.drawStr(2, 39, buf);
-        int tw = u8g2.getStrWidth(buf);
-        u8g2.drawCircle(2 + tw + 2, 34, 1);
-        u8g2.drawStr(2 + tw + 5, 39, "C");
-    }
+    if (gClockSet)
+        updateClockTime();
+    drawMetricsStatusBar();
+
+    if (gCpu >= 0)
+        drawRow(30, "CPU", gCpu);
+    if (gRam >= 0)
+        drawRow(43, "RAM", gRam);
+    if (gDisk >= 0)
+        drawRow(56, "DSK", gDisk);
+
     u8g2.sendBuffer();
 }
 
@@ -206,7 +285,17 @@ void drawStars()
     }
 
     u8g2.clearBuffer();
-    int cx = 36, cy = 20;
+    char temp[8];
+    if (gTemp > 0)
+        snprintf(temp, sizeof(temp), "%dC", gTemp);
+    else
+        snprintf(temp, sizeof(temp), "--C");
+    drawStatusBar("SCREEN SAVER", "", temp);
+
+    int cx = OLED_WIDTH / 2;
+    int cy = (OLED_MAIN_Y + OLED_HEIGHT) / 2;
+    float scaleX = (float)(OLED_WIDTH / 2 - 4);
+    float scaleY = (float)((OLED_HEIGHT - OLED_MAIN_Y) / 2 - 2);
     for (int i = 0; i < STARS_N; i++) {
         starZ[i] -= 0.03f;
         if (starZ[i] <= 0.0f) {
@@ -214,22 +303,22 @@ void drawStars()
             starY[i] = randF(-1.0f, 1.0f);
             starZ[i] = 1.0f;
         }
-        int px = cx + (int)(starX[i] / starZ[i] * 20.0f);
-        int py = cy + (int)(starY[i] / starZ[i] * 11.0f);
-        if (px < 0 || px >= 72 || py < 0 || py >= 40)
+        int px = cx + (int)(starX[i] / starZ[i] * scaleX);
+        int py = cy + (int)(starY[i] / starZ[i] * scaleY);
+        if (px < 0 || px >= OLED_WIDTH || py < OLED_MAIN_Y || py >= OLED_HEIGHT)
             continue;
         if (starZ[i] < 0.3f)
-            u8g2.drawBox(px - 1, py - 1, 2, 2);
+            u8g2.drawBox(px - 1, py - 1, 3, 3);
         else
             u8g2.drawPixel(px, py);
     }
     for (int i = 0; i < STARS_BURST; i++) {
         if (burstLife[i] == 0)
             continue;
-        int px = cx + (int)(burstX[i] / burstZ[i] * 20.0f);
-        int py = cy + (int)(burstY[i] / burstZ[i] * 11.0f);
-        if (px >= 0 && px < 72 && py >= 0 && py < 40)
-            u8g2.drawBox(px - 1, py - 1, 3, 3);
+        int px = cx + (int)(burstX[i] / burstZ[i] * scaleX);
+        int py = cy + (int)(burstY[i] / burstZ[i] * scaleY);
+        if (px >= 0 && px < OLED_WIDTH && py >= OLED_MAIN_Y && py < OLED_HEIGHT)
+            u8g2.drawBox(px - 2, py - 2, 5, 5);
         burstLife[i]--;
     }
     u8g2.sendBuffer();
@@ -330,20 +419,19 @@ void drawOsd(OsdType type, int val)
 
     u8g2.clearBuffer();
 
-    u8g2.setFont(u8g2_font_6x10_tf);
-    int lw = u8g2.getStrWidth(label);
-    u8g2.drawStr((72 - lw) / 2, 8, label);
-
     if (type == OSD_MEDIA) {
-        drawMediaIcon(28, 13, val);
+        drawStatusBar("", label, "");
+        drawMediaIcon((OLED_WIDTH - 16) / 2, 30, val);
         u8g2.sendBuffer();
         return;
     }
 
+    drawProgressStatusBar(label, val);
+
     switch (type) {
-        case OSD_BRIGHT: drawBrightIcon(4, 12); break;
-        case OSD_KBD: drawKbdIcon(3, 12); break;
-        case OSD_VOL: drawVolumeIcon(4, 12, gMuted); break;
+        case OSD_BRIGHT: drawBrightIcon(12, 24); break;
+        case OSD_KBD: drawKbdIcon(11, 24); break;
+        case OSD_VOL: drawVolumeIcon(10, 24, gMuted); break;
         default: break;
     }
 
@@ -351,15 +439,11 @@ void drawOsd(OsdType type, int val)
     snprintf(buf, sizeof(buf), "%d", val);
     u8g2.setFont(u8g2_font_logisoso24_tn);
     int nw = u8g2.getStrWidth(buf);
-    u8g2.drawStr(24, 33, buf);
+    u8g2.drawStr(48, 50, buf);
 
     u8g2.setFont(u8g2_font_5x8_tf);
-    u8g2.drawStr(26 + nw, 22, "%");
-
-    u8g2.drawFrame(2, 35, 68, 4);
-    int fw = (int)(66L * val / 100);
-    if (fw > 0)
-        u8g2.drawBox(3, 36, fw, 2);
+    u8g2.drawStr(52 + nw, 38, "%");
+    u8g2.drawHLine(12, 58, 115);
 
     u8g2.sendBuffer();
 }
@@ -391,19 +475,39 @@ void drawYoutubeIcon(int x, int y)
 void drawMediaScreen()
 {
     u8g2.clearBuffer();
-    if (gMediaIcon == 1)
-        drawYoutubeIcon(27, 3);
-    else
-        drawSpotifyIcon(28, 3);
 
-    u8g2.setFont(u8g2_font_5x8_t_cyrillic);
-    int textW = u8g2.getUTF8Width(gMediaText);
-    if (textW <= 72) {
-        u8g2.drawUTF8((72 - textW) / 2, 36, gMediaText);
+    if (gMediaIcon == 1) {
+        drawYoutubeIcon(2, 1);
+        u8g2.setFont(u8g2_font_logisoso16_tn);
+        const char* label = "YOUTUBE";
+        int lw = u8g2.getStrWidth(label);
+        u8g2.drawStr(24 + (OLED_WIDTH - 24 - lw) / 2, 15, label);
     } else {
-        int full = textW + 72;
-        int sx = 72 - (gMediaScroll % full);
-        u8g2.drawUTF8(sx, 36, gMediaText);
+        drawSpotifyIcon(2, 0);
+        u8g2.setFont(u8g2_font_5x8_tf);
+        u8g2.drawStr(24, 11, "SPOTIFY");
+        if (gClockSet) {
+            updateClockTime();
+            int tw = u8g2.getStrWidth(gTime);
+            u8g2.drawStr(OLED_WIDTH - tw - 2, 11, gTime);
+        }
+    }
+
+    // U8g2 X2 doubles both width and height: 6x12 -> 12x24.
+    u8g2.setFont(u8g2_font_6x12_t_cyrillic);
+    if (!gMediaText[0]) {
+        const char* empty = "NO MEDIA";
+        int w = u8g2.getUTF8Width(empty) * 2;
+        u8g2.drawUTF8X2((OLED_WIDTH - w) / 2, 52, empty);
+    } else {
+        int textW = u8g2.getUTF8Width(gMediaText) * 2;
+        if (textW <= OLED_WIDTH) {
+            u8g2.drawUTF8X2((OLED_WIDTH - textW) / 2, 52, gMediaText);
+        } else {
+            int full = textW + OLED_WIDTH;
+            int sx = OLED_WIDTH - (gMediaScroll % full);
+            u8g2.drawUTF8X2(sx, 52, gMediaText);
+        }
     }
     u8g2.sendBuffer();
 }
@@ -638,7 +742,6 @@ void setup()
 
     Serial.begin(115200);
     Serial.println("OLED monitor ready");
-
     startBLE();
     Serial.println("BLE online");
 }
