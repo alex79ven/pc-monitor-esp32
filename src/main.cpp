@@ -57,7 +57,9 @@ enum ModeType {
 
 static volatile ModeType gMode = MODE_METRICS;
 static char gTime[8] = "00:00";
-static char gDate[12] = "--.--";
+// Дата в UTF-8: кириллица занимает по 2 байта, поэтому буфер
+// расширен, иначе длинное "сентября" обрезалось бы.
+static char gDate[32] = "--.--";
 static bool gClockSet = false;
 static int gClockSec = 0;
 static uint32_t gClockSetMs = 0;
@@ -71,7 +73,7 @@ static volatile bool gMuted = false;
 
 static int gCpu = -1;
 static int gRam = -1;
-static int gDisk = -1;
+static int gFanRpm = -1;
 static int gTemp = -1;
 static int gKbd = -1;
 
@@ -132,6 +134,7 @@ inline void dTriangle(int x0, int y0, int x1, int y1, int x2, int y2)
     u8g2.drawTriangle(x0 + gOffX, y0, x1 + gOffX, y1, x2 + gOffX, y2);
 }
 inline void dStr(int x, int y, const char* s) { u8g2.drawStr(x + gOffX, y, s); }
+inline void dUTF8(int x, int y, const char* s) { u8g2.drawUTF8(x + gOffX, y, s); }
 inline void dUTF8X2(int x, int y, const char* s) { u8g2.drawUTF8X2(x + gOffX, y, s); }
 
 void drawMetrics();
@@ -164,12 +167,32 @@ void tickPixelShift()
     redrawCurrent();
 }
 
+// Полосы укорочены на SHIFT_POS_MAX, иначе при горизонтальном сдвиге
+// правый край уходил бы за границу экрана.
+#define BAR_X 54
+#define BAR_W (72 - SHIFT_POS_MAX)
+#define BAR_H 10
+// Шаг диагональной штриховки: меньше — плотнее.
+#define HATCH_STEP 5
+
+// Диагональная штриховка под 45° вместо сплошной заливки.
+// Пиксель рисуется, если (x + y) кратно HATCH_STEP.
+void drawHatch(int x, int y, int w, int h)
+{
+    for (int col = 0; col < w; col++) {
+        for (int row = 0; row < h; row++) {
+            if (((col + row) % HATCH_STEP) == 0)
+                dPixel(x + col, y + row);
+        }
+    }
+}
+
 void drawBar(int x, int baseline, int w, int barH, int v)
 {
     dFrame(x, baseline - barH + 1, w, barH);
     int fw = (int)((long)(w - 2) * v / 100);
     if (fw > 0)
-        dBox(x + 1, baseline - barH + 2, fw, barH - 2);
+        drawHatch(x + 1, baseline - barH + 2, fw, barH - 2);
 }
 
 void drawRow(int baseline, const char* label, int value)
@@ -179,7 +202,31 @@ void drawRow(int baseline, const char* label, int value)
     char buf[8];
     snprintf(buf, sizeof(buf), "%d%%", value);
     dStr(24, baseline, buf);
-    drawBar(54, baseline, 72, 10, value);
+    drawBar(BAR_X, baseline, BAR_W, BAR_H, value);
+}
+
+// Шкала оборотов вентилятора. Нижняя граница — реальный минимум
+// этого Mac (F1Mn = 2000), верхняя — 6200, чуть выше фактического
+// максимума датчика (F0Mx = 6156), чтобы полоса доходила почти
+// до конца, но не упиралась в 100 % слишком рано.
+#define FAN_MIN_RPM 2000
+#define FAN_MAX_RPM 6200
+
+// Строка вентилятора: та же полоса, но 1000..6000 RPM и подпись в оборотах.
+void drawFanRow(int baseline, int rpm)
+{
+    int pct = (rpm - FAN_MIN_RPM) * 100 / (FAN_MAX_RPM - FAN_MIN_RPM);
+    if (pct < 0)
+        pct = 0;
+    if (pct > 100)
+        pct = 100;
+
+    u8g2.setFont(u8g2_font_6x10_tf);
+    dStr(2, baseline, "FAN");
+    char buf[12];
+    snprintf(buf, sizeof(buf), "%d", rpm);
+    dStr(24, baseline, buf);
+    drawBar(BAR_X, baseline, BAR_W, BAR_H, pct);
 }
 
 void applyContrast()
@@ -276,8 +323,13 @@ void drawProgressStatusBar(const char* label, int val)
     int tw = u8g2.getStrWidth(buf);
     dStr(OLED_WIDTH - tw - 2, 7, buf);
 
-    dFrame(2, 8, OLED_WIDTH - 4, 7);
-    int fw = (int)((long)(OLED_WIDTH - 8) * val / 100);
+    // Жёлтый прогресс-бар остаётся сплошной заливкой: он горит лишь
+// 5 секунд во время OSD, поэтому постоянной нагрузки на пиксели нет.
+// Ширина уменьшена на SHIFT_POS_MAX по той же причине, что и у полос
+// в синей области, — иначе правый край уходил бы за границу.
+    const int w = OLED_WIDTH - 4 - SHIFT_POS_MAX;
+    dFrame(2, 8, w, 7);
+    int fw = (int)((long)(w - 4) * val / 100);
     if (fw > 0)
         dBox(3, 9, fw, 5);
 }
@@ -287,13 +339,16 @@ void drawClock()
     updateClockTime();
     u8g2.clearBuffer();
 
-    // Дата крупно в жёлтой полосе: "MON, 5 OCT".
-    u8g2.setFont(u8g2_font_logisoso16_tf);
-    int dw = u8g2.getStrWidth(gDate);
-    dStr((OLED_WIDTH - dw) / 2, 15, gDate);
+    // Дата по-русски в жёлтой полосе: "Пн, 5 октября".
+    // Кириллица есть только в *_t_cyrillic шрифтах; logisoso содержит
+    // лишь цифры и знаки. 9x15_t_cyrillic — самый крупный, который
+    // влезает в 128 px по этой строке (117 px).
+    u8g2.setFont(u8g2_font_9x15_t_cyrillic);
+    int dw = u8g2.getUTF8Width(gDate);
+    dUTF8((OLED_WIDTH - dw) / 2, 13, gDate);
 
-    // 42 px — максимальный размер, при котором "23:45" помещается
-    // в ширину 128 px и по высоте в синюю область (46 px).
+    // Заливные часы: 42 px — максимальный размер, при котором
+    // "23:45" помещается в ширину 128 px и по высоте в синюю область.
     u8g2.setFont(u8g2_font_logisoso42_tn);
     int w = u8g2.getStrWidth(gTime);
     dStr((OLED_WIDTH - w) / 2, 60, gTime);
@@ -310,7 +365,7 @@ void drawMetrics()
     else
         snprintf(temp, sizeof(temp), "--");
 
-    if (gCpu < 0 && gRam < 0 && gDisk < 0) {
+    if (gCpu < 0 && gRam < 0 && gFanRpm < 0) {
         drawStatusBar("PC", "OFFLINE", temp);
         u8g2.setFont(u8g2_font_6x10_tf);
         const char* title = "PC MONITOR";
@@ -331,8 +386,8 @@ void drawMetrics()
         drawRow(30, "CPU", gCpu);
     if (gRam >= 0)
         drawRow(43, "RAM", gRam);
-    if (gDisk >= 0)
-        drawRow(56, "DSK", gDisk);
+    if (gFanRpm >= 0)
+        drawFanRow(56, gFanRpm);
 
     u8g2.sendBuffer();
 }
@@ -770,19 +825,19 @@ void processLine(const char* line)
 
     int cpu = findVal("CPU", line);
     int ram = findVal("RAM", line);
-    int disk = findVal("DISK", line);
     int temp = findVal("TEMP", line);
+    int fan = findVal("FAN", line);
 
     if (cpu >= 0)
         gCpu = cpu;
     if (ram >= 0)
         gRam = ram;
-    if (disk >= 0)
-        gDisk = disk;
     if (temp >= 0)
         gTemp = temp;
+    if (fan >= 0)
+        gFanRpm = fan;
 
-    if (cpu >= 0 || ram >= 0 || disk >= 0 || temp >= 0) {
+    if (cpu >= 0 || ram >= 0 || temp >= 0 || fan >= 0) {
         gMode = MODE_METRICS;
         applyContrast();
         drawMetrics();
