@@ -94,8 +94,10 @@ def sample_line():
     ram = int(psutil.virtual_memory().percent)
     temp = int(pick_temp())
     rpm = pick_fan_rpm()
-    return (f"{clock_tag()} CPU {cpu} RAM {ram} TEMP {temp} "
-            f"FAN {rpm}")
+    # CLK с датой уходит в конце строки: прошивка берёт дату как остаток
+    # после времени, и метрики после неё попали бы в буфер даты.
+    return (f"CPU {cpu} RAM {ram} TEMP {temp} FAN {rpm} "
+            f"{clock_tag()}")
 
 
 def pick_temp():
