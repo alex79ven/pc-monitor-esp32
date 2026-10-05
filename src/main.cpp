@@ -715,14 +715,44 @@ bool applyClock(const char* s, bool withDate)
     gClockSet = true;
 
     // Дата идёт после времени: "ДЕНЬ_НЕДЕЛИ, Д МЕСЯЦ".
+    // В строке метрик после даты идут CPU/RAM/TEMP/FAN, поэтому
+    // обрезаем всё начиная с первого известного тега, иначе в gDate
+    // попадало бы "ПН, 5 ОКТ CPU 24 RAM 63 ...".
     if (withDate) {
+        static const char* kTags[] = {
+            "CPU", "RAM", "DISK", "TEMP", "FAN", "MEDIA",
+            "BRIGHT", "KBD", "VOL", "MUTE", "KEY", "STARS", "NOWPLAY",
+        };
         const char* q = s;
         while (*q && *q != ' ')
             q++;
         while (*q == ' ')
             q++;
-        if (*q)
-            snprintf(gDate, sizeof(gDate), "%s", q);
+
+        char date[sizeof(gDate)];
+        size_t len = 0;
+        while (q[len]) {
+            bool cut = false;
+            for (unsigned i = 0; i < sizeof(kTags) / sizeof(kTags[0]); i++) {
+                size_t tl = strlen(kTags[i]);
+                if (strncmp(q + len, kTags[i], tl) == 0) {
+                    cut = true;
+                    break;
+                }
+            }
+            if (cut)
+                break;
+            len++;
+        }
+        while (len > 0 && q[len - 1] == ' ')
+            len--;
+        if (len > 0) {
+            if (len >= sizeof(date))
+                len = sizeof(date) - 1;
+            memcpy(date, q, len);
+            date[len] = 0;
+            snprintf(gDate, sizeof(gDate), "%s", date);
+        }
     }
     return true;
 }
