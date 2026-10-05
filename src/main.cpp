@@ -908,25 +908,43 @@ class BLEHandler : public BLECharacteristicCallbacks
     }
 };
 
-static volatile bool gBleConnected = false;
+// Источник истины о наличии клиента — собственный счётчик, а НЕ
+// gServer->getConnectedCount(). У того есть баг в Arduino ESP32 BLE:
+// счётчик инкрементируется в CONNECT_EVT, а декремент в DISCONNECT_EVT
+// зависит от removePeerDevice(), который возвращает результат удаления из
+// m_connectedServersMap. При рассинхроне счётчик залипает навсегда, и
+// реклама больше не возобновляется — устройство пропадает из эфира уже
+// после первого disconnect. Свой счётчик мы ведём сами.
+static volatile int gBleClients = 0;
+
+BLEServer* gServer = nullptr;
+
+static inline bool bleHasClient()
+{
+    return gBleClients > 0;
+}
 
 class BLEServerCb : public BLEServerCallbacks
 {
     void onConnect(BLEServer* srv) override
     {
-        gBleConnected = true;
+        gBleClients++;
         gBleLastData = millis();
+        Serial.printf("BLE: client connected (clients=%d)\n", gBleClients);
     }
     void onDisconnect(BLEServer* srv) override
     {
-        gBleConnected = false;
-        delay(200);
-        BLEDevice::startAdvertising();
-        Serial.println("BLE: re-advertising");
+        // Здесь раньше стояли delay(200) и BLEDevice::startAdvertising().
+        // Оба делали то же, что и ветка рекламы в loop(), поэтому реклама
+        // стартовала дважды подряд на активном соединении, а delay()
+        // блокировал BLE-стек прямо внутри callback. Оставляем только
+        // счётчик: рекламу возобновит loop().
+        if (gBleClients > 0)
+            gBleClients--;
+        gBleLastData = 0;
+        Serial.printf("BLE: disconnected (clients=%d)\n", gBleClients);
     }
 };
-
-BLEServer* gServer = nullptr;
 
 void startBLE()
 {
@@ -986,17 +1004,25 @@ void loop()
     }
 
     uint32_t now = millis();
-    if (gBleConnected && gBleLastData != 0 &&
-        (now - gBleLastData) >= BLE_STALE_MS) {
+    // Сравнение ОБЯЗАТЕЛЬНО знаковое. gBleLastData ставится в BLE-задаче
+    // (onWrite/onConnect), а now читается здесь, в задаче loop(). Между
+    // чтениями проходит около 1 мс, поэтому метка регулярно оказывается
+    // на 1 мс ВПЕРЕДИ now. Беззнаковая разность в uint32_t даёт
+    // 13084 - 13085 = 0xFFFFFFFF (4294967 с), условие выполняется, и
+    // ESP32 разрывает живое соединение сразу после каждой записи —
+    // отсюда обрывы каждые 0.0-3 с.
+    if (bleHasClient() && gBleLastData != 0 &&
+        (int32_t)(now - gBleLastData) >= (int32_t)BLE_STALE_MS) {
         // macOS может потерять BLE-сессию во время сна без disconnect
-        // callback на стороне ESP32. Сбрасываем ложное состояние connected
-        // и возвращаем периодическое рекламное объявление.
-        gBleConnected = false;
+        // callback на стороне ESP32. Рекламу здесь НЕ возобновляем: этим
+        // занимается ветка advertising в loop(). Счётчик сбрасываем сразу,
+        // чтобы реклама возобновилась ещё до disconnect-callback.
+        Serial.println("BLE: stale connection, dropping");
+        if (gBleClients > 0)
+            gBleClients--;
         if (gServer != nullptr && gServer->getConnectedCount() > 0) {
             gServer->disconnect(gServer->getConnId());
         }
-        BLEDevice::startAdvertising();
-        Serial.println("BLE: stale connection, re-advertising");
     }
     if (gOsdType != OSD_NONE && (now - gOsdUntil) >= OSD_DURATION) {
         gOsdType = OSD_NONE;
@@ -1030,12 +1056,23 @@ void loop()
         }
     }
 
+    // Рекламу возобновляем ТОЛЬКО когда реально нет клиента и только если
+    // она сейчас не идёт. BLEAdvertising::start() не проверяет состояние
+    // и каждый раз зовёт esp_ble_gap_start_advertising(); повторный вызов
+    // на уже идущей рекламе сбивает BLE-стек, и устройство перестаёт
+    // появляться при сканировании.
+    // Рекламу возобновляем по таймеру, когда клиента нет. Флаг gAdvRunning
+    // здесь НЕ используется: он залипал после первого запуска, реклама
+    // больше не возобновлялась и устройство пропадало из эфира. В логе видно
+    // было одну строку "BLE: advertising" за все 12 секунд.
     static uint32_t lastAdv = 0;
     if (lastAdv == 0)
         lastAdv = now;
-    if (!gBleConnected && now - lastAdv >= BLE_ADV_RETRY_MS) {
+    if (bleHasClient()) {
+        lastAdv = now;
+    } else if ((uint32_t)(now - lastAdv) >= BLE_ADV_RETRY_MS) {
         lastAdv = now;
         BLEDevice::startAdvertising();
-        Serial.println("BLE: keepalive adv");
+        Serial.println("BLE: advertising");
     }
 }
