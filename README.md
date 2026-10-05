@@ -77,6 +77,34 @@ PC (monitor.py + mac_bridge.py + mac_smc.py)
 
 Если изображение отсутствует или сдвинуто, проверьте вариант `SSD1306 128×64`, I²C-адрес `0x3C` и переключите `SDA`/`SCL` местами.
 
+## Прошивка без PlatformIO
+
+Готовые бинарники лежат в папке [`firmware/`](firmware/). Их можно залить прямо из браузера — например, через [ESP Web Tools](https://espressif.github.io/esptool-js/) или [flasher.pro](https://flasher.pro) — без установки PlatformIO.
+
+Для ESP32-C3 нужны **три файла с разными адресами**:
+
+| файл | размер | адрес |
+|---|---|---|
+| [`firmware/bootloader.bin`](firmware/bootloader.bin) | 13 КБ | `0x0` |
+| [`firmware/partitions.bin`](firmware/partitions.bin) | 3 КБ | `0x8000` |
+| [`firmware/firmware.bin`](firmware/firmware.bin) | 1050 КБ | `0x10000` |
+
+Порядок действий:
+
+1. выберите плату **ESP32-C3** и порт, к которому подключён дисплей;
+2. подключите три файла с указанными адресами;
+3. нажмите **Flash** и дождитесь окончания.
+
+При прошивке через онлайн-флешер BLE-приложение на Mac лучше закрыть: оно занимает соединение с устройством и мешает перезагрузке после прошивки.
+
+Если что-то пошло не так, восстановить ESP32-C3 можно по USB-кабелю через `pio run -t upload --upload-port /dev/cu.usbmodem1101` (порт уточните в списке устройств).
+
+Обычная сборка из исходников:
+
+```bash
+pio run -t upload --upload-port /dev/cu.usbmodem1101
+```
+
 ## BLE-протокол
 
 Используется Nordic UART Service (NUS):
