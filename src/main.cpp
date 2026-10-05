@@ -97,7 +97,9 @@ static uint8_t burstLife[STARS_BURST];
 static uint8_t burstIdx = 0;
 
 #define MEDIA_TEXT_MAX 120
-#define MEDIA_SCROLL_SPEED_MS 55
+// Шаг прокрутки в миллисекундах: меньше — быстрее.
+// Исходно было 110, затем 55, теперь 27 (x4 от исходного).
+#define MEDIA_SCROLL_SPEED_MS 27
 static char gMediaText[MEDIA_TEXT_MAX] = "";
 static int gMediaIcon = 0;      // 0 spotify, 1 youtube
 static int gMediaScroll = 0;
