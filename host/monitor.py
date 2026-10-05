@@ -61,27 +61,41 @@ if IS_LINUX:
     _INPUT_EVENT = struct.Struct("@llHHI")
 
 
-WEEKDAYS = ("MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN")
-MONTHS = ("JAN", "FEB", "MAR", "APR", "MAY", "JUN",
-          "JUL", "AUG", "SEP", "OCT", "NOV", "DEC")
+WEEKDAYS = ("ПН", "ВТ", "СР", "ЧТ", "ПТ", "СБ", "ВС")
+MONTHS = ("ЯНВ", "ФЕВ", "МАР", "АПР", "МАЯ", "ИЮН",
+          "ИЮЛ", "АВГ", "СЕН", "ОКТ", "НОЯ", "ДЕК")
 
 
 def clock_tag():
     # Время и дата для OLED. Используется отдельная команда CLK, чтобы не
     # переключать экран в режим часов, как это делает команда TIME.
-    # Формат даты: "ДЕНЬ_НЕДЕЛИ, Д МЕСЯЦ" -> "MON, 5 OCT"
+    # Формат даты по-русски, прописными: "ПН, 5 ОКТ". Месяц сокращён
+    # до трёх букв, иначе "ПН, 15 СЕНТЯБРЯ" не помещается в 128 px.
     now = time.localtime()
     date = "%s, %d %s" % (WEEKDAYS[now.tm_wday], now.tm_mday,
                           MONTHS[now.tm_mon - 1])
     return "CLK " + time.strftime("%H:%M:%S") + " " + date
 
 
+def pick_fan_rpm():
+    """Фактические обороты вентилятора, 0 если датчик недоступен."""
+    if IS_DARWIN and mac_smc is not None:
+        try:
+            value = mac_smc.fan_rpm()
+            if value is not None:
+                return int(round(value))
+        except Exception:  # noqa: BLE001
+            pass
+    return 0
+
+
 def sample_line():
     cpu = int(psutil.cpu_percent())
     ram = int(psutil.virtual_memory().percent)
-    disk = int(psutil.disk_usage("/").percent)
     temp = int(pick_temp())
-    return f"{clock_tag()} CPU {cpu} RAM {ram} DISK {disk} TEMP {temp}"
+    rpm = pick_fan_rpm()
+    return (f"{clock_tag()} CPU {cpu} RAM {ram} TEMP {temp} "
+            f"FAN {rpm}")
 
 
 def pick_temp():
@@ -497,8 +511,11 @@ class BleSender(threading.Thread):
                 break
             except Exception as e:  # noqa: BLE001
                 self._err = e
-                if not connected_once:
-                    self._last_address = None
+                # Сбрасываем кэш адреса при ЛЮБОМ сбое подключения, даже если
+                # оно когда-то удалось. После сна/перезагрузки Mac кэш
+                # CoreBluetooth устаревает, и попытка коннекта по старому
+                # адресу вслепую не находит устройство — нужен новый скан.
+                self._last_address = None
                 print(f"BLE: сбой: {e!r}", flush=True)
             finally:
                 await self._disconnect(client)

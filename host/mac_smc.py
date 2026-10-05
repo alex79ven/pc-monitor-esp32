@@ -207,6 +207,10 @@ class _SMCReader:
                 return float(int.from_bytes(raw[:2], "big"))
             if type_name == "si16" and len(raw) >= 2:
                 return float(int.from_bytes(raw[:2], "big", signed=True))
+            if type_name == "fpe2" and len(raw) >= 2:
+                # 16-bit «fixed point exponent 2»: значение = raw / 4.
+                # Так хранятся обороты вентиляторов (F0Ac, F0Mn, ...).
+                return float(int.from_bytes(raw[:2], "big")) / 4.0
         except (ValueError, struct.error):
             return None
         return None
@@ -214,6 +218,7 @@ class _SMCReader:
 
 _READER = _SMCReader()
 _CPU_KEYS = ("TC0P", "TC0D", "TC0H", "TCXC", "TCXc")
+_FAN_KEYS = ("F0Ac", "F1Ac", "F2Ac")
 
 
 def cpu_temperature() -> Optional[float]:
@@ -223,3 +228,17 @@ def cpu_temperature() -> Optional[float]:
         if value is not None and 0.0 < value < 150.0:
             return value
     return None
+
+
+def fan_rpm() -> Optional[float]:
+    """Return the highest actual fan speed in RPM, if available.
+
+    F0Ac/F1Ac hold the current speed of each fan. Macs Fan Control may be
+    active on this machine, but the actual-RPM keys stay readable.
+    """
+    best = None
+    for key in _FAN_KEYS:
+        value = _READER.read_key(key)
+        if value is not None and 0.0 < value < 20000.0:
+            best = value if best is None else max(best, value)
+    return best
