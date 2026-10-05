@@ -79,7 +79,7 @@ PC (monitor.py + mac_bridge.py + mac_smc.py)
 
 ## Прошивка без PlatformIO
 
-Готовые бинарники лежат в папке [`firmware/`](firmware/). Их можно залить прямо из браузера — например, через [ESP Web Tools](https://espressif.github.io/esptool-js/) или [flasher.pro](https://flasher.pro) — без установки PlatformIO.
+Готовые бинарники лежат в папке [`firmware/`](firmware/). Их можно залить прямо из браузера — без установки PlatformIO, Python и драйверов.
 
 Для ESP32-C3 нужны **три файла с разными адресами**:
 
@@ -89,7 +89,26 @@ PC (monitor.py + mac_bridge.py + mac_smc.py)
 | [`firmware/partitions.bin`](firmware/partitions.bin) | 3 КБ | `0x8000` |
 | [`firmware/firmware.bin`](firmware/firmware.bin) | 1050 КБ | `0x10000` |
 
-Порядок действий:
+Адрес `bootloader.bin` — **`0x0`**, потому что ESP32-C3 относится к RISC-V-семейству, где загрузчик стоит в начале флеша. У классического ESP32 этот адрес был бы `0x1000`.
+
+> **Внимание:** если плата после прошивки не запускается, проверьте адрес загрузчика. Если инструмент подставил `0x1000` вместо `0x0` — это и есть причина, поправьте вручную.
+
+### Онлайн-флешеры
+
+Все перечисленные работают через Web Serial API прямо в браузере: подключение к плане идёт по USB, данные никуда не отправляются.
+
+| инструмент | ссылка | особенности |
+|---|---|---|
+| ESP Tool (официальный Espressif) | [espressif.github.io/esptool-js](https://espressif.github.io/esptool-js/) | входит в `esptool-js`, самый надёжный вариант; адреса вводятся вручную |
+| ESP Flasher App | [espflasher.app](https://espflasher.app) | сам подбирает адреса по именам файлов, есть просмотр таблицы разделов и встроенный монитор порта |
+| ESP Web Tools | [esphome.github.io/esp-web-tools](https://esphome.github.io/esp-web-tools/) | простой интерфейс, подходит для готовых merged-образов |
+| ESP Tool Online | [espboards.dev/tools/program](https://espboards.dev/tools/program) | загрузка перетаскиванием, монитор порта, стирание флеша |
+| flasher.pro | [flasher.pro](https://flasher.pro) | рассчитан на готовые прошивки Tasmota / ESPHome |
+| Web Serial Flasher | [github.com/esptool-js-Web-Based-ESP-Flash-Utility](https://github.com/esptool-js-Web-Based-ESP-Flash-Utility/esptool-js-web-serial-for-W11-10) | самостоятельный HTML-флешер, если официальный вдруг недоступен |
+
+**Требования к браузеру:** Chrome, Edge или Opera версии 89+. Firefox и Safari Web Serial не поддерживают, поэтому эти инструменты в них не заработают.
+
+### Порядок действий (одинаково для всех инструментов)
 
 1. выберите плату **ESP32-C3** и порт, к которому подключён дисплей;
 2. подключите три файла с указанными адресами;
@@ -97,12 +116,25 @@ PC (monitor.py + mac_bridge.py + mac_smc.py)
 
 При прошивке через онлайн-флешер BLE-приложение на Mac лучше закрыть: оно занимает соединение с устройством и мешает перезагрузке после прошивки.
 
-Если что-то пошло не так, восстановить ESP32-C3 можно по USB-кабелю через `pio run -t upload --upload-port /dev/cu.usbmodem1101` (порт уточните в списке устройств).
-
-Обычная сборка из исходников:
+Альтернатива — прошивка по USB через `esptool`:
 
 ```bash
-pio run -t upload --upload-port /dev/cu.usbmodem1101
+esptool.py --chip esp32c3 -p /dev/cu.usbmodem14101 -b 460800 write_flash \
+  0x0 firmware/bootloader.bin \
+  0x8000 firmware/partitions.bin \
+  0x10000 firmware/firmware.bin
+```
+
+Если что-то пошло не так, восстановить ESP32-C3 можно по USB-кабелю через PlatformIO:
+
+```bash
+pio run -t upload --upload-port /dev/cu.usbmodem14101
+```
+
+Порт определяется автоматически при подключении платы; если указанный не подходит, посмотрите список устройств:
+
+```bash
+ls /dev/cu.usbmodem*
 ```
 
 ## BLE-протокол
